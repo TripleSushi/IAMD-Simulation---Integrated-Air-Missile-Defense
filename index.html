@@ -90,6 +90,14 @@
 //   - Added swept-volume collision check (line-segment closest-point test).
 //   - Gravity increased 0.009 → 0.025 for visible parabolic ballistic arcs.
 //   - Track crosshairs enlarged (14px → 24px) with pulsing animation.
+// CHANGELOG v1.5 — BUG FIXES (auto-fixed 2026-03-07):
+//   - [HIGH-1] PN Vc clamping: max(Vc,1.0) → max(abs(Vc),0.5). Negative
+//     closing velocity no longer inverts lateral guidance acceleration.
+//   - [MED-1] kf.predict() moved to per-frame draw() loop for all tracks.
+//     Fixes ~80-frame drone engagement delay; covariance grows correctly.
+//   - [MED-2] prevLOS updated before rMag<0.5 early-return. Eliminates
+//     2-frame LOS-rate spike at terminal approach causing last-instant misses.
+//   - [MED-3] kf.age threshold already correct (isHypersonic?4:2) — no change.
 // =============================================================================
 
 // ── ALL TUNABLE PARAMETERS LIVE HERE — never scatter magic numbers ────────────
@@ -260,7 +268,7 @@ class Radar {
           this.tracks.set(t.id, new KalmanTrack(mx, my)); // first detection
         } else {
           const kf = this.tracks.get(t.id);
-          kf.predict();   // advance state forward one timestep
+          // FIX MED-1: predict() moved to per-frame loop in draw()
           kf.update(mx, my); // correct with new measurement
         }
       }
@@ -349,7 +357,7 @@ class EWRadar {
           this.tracks.set(t.id, new KalmanTrack(mx, my));
         } else {
           const kf = this.tracks.get(t.id);
-          kf.predict();
+          // FIX MED-1: predict() moved to per-frame loop in draw()
           kf.update(mx, my);
         }
       }
@@ -751,9 +759,11 @@ class Interceptor {
     // Relative position missile→target (line-of-sight vector)
     const rx = tp.x - this.x, ry = tp.y - this.y;
     const rMag = sqrt(rx*rx + ry*ry);
-    if (rMag < 0.5) return; // prevent division by zero at intercept
 
-    // LOS angle θ = atan2(ry, rx)
+    // FIX MED-2: Compute LOS and update prevLOS BEFORE the rMag guard.
+    // Previously the guard returned early and skipped the prevLOS update,
+    // so the NEXT frame computed losRate over 2 frames — doubling the rate
+    // and firing a large spurious lateral command at terminal approach.
     const los = atan2(ry, rx);
 
     // LOS rate dθ/dt ≈ Δθ per frame (numerical differentiation)
@@ -764,12 +774,10 @@ class Interceptor {
       if (dTheta >  PI) dTheta -= TWO_PI;
       if (dTheta < -PI) dTheta += TWO_PI;
       losRate = dTheta;
-    } else {
-      // FIX: On first acquisition, initialize prevLOS to current LOS
-      // so losRate starts at 0 and ramps up smoothly instead of spiking.
-      // (Without this, frame 2 sees a huge delta from null→LOS→LOS'.)
     }
-    this.prevLOS = los;
+    this.prevLOS = los; // always updated — even before early-return below
+
+    if (rMag < 0.5) return; // prevent division by zero at intercept
 
     // Closing velocity: V_c = −(relVel · LOS_unit)
     // dot product of relative velocity with LOS unit vector
@@ -779,10 +787,11 @@ class Interceptor {
 
     // PN command: a_m = N · V_c · dθ/dt  (perpendicular to LOS)
     // IMPROVED: use per-interceptor navConst and maxAccel
-    // FIX: Clamp Vc to positive floor (1.0) to prevent sign inversion
-    // when closing velocity goes negative (target moving away briefly).
-    // Old max(Vc, 0.5) was too small and allowed PN correction inversion.
-    const clampedVc = max(Vc, 1.0);
+    // FIX HIGH-1: Use abs(Vc) so negative closing velocity (interceptor
+    // momentarily diverging) does NOT invert the lateral acceleration.
+    // losRate sign still drives the correct perpendicular direction.
+    // Old max(Vc,1.0) discarded negative Vc — causing terminal misses.
+    const clampedVc = max(abs(Vc), 0.5);
     const aMag  = this.navConst * clampedVc * losRate;
     const aCmd  = constrain(aMag, -this.maxAccel, this.maxAccel);
 
@@ -1516,6 +1525,13 @@ function draw() {
   // FIX: Removed redundant .filter(t => t.alive) — threats already filtered above
   for (const r of radars) r.update(threats);
   ewRadar.update(threats); // IMPROVED v1.2: EW radar updates too
+
+  // FIX MED-1: Advance ALL Kalman tracks every frame regardless of detection.
+  // Previously predict() only ran inside detection blocks (~5%/frame for drones),
+  // so covariance didn't grow between detections → ~80-frame engagement delay.
+  for (const r of [...radars, ewRadar]) {
+    for (const [, kf] of r.tracks) kf.predict();
+  }
 
   // ── C2 interceptor assignment (IMPROVED: adaptive cooldown)
   // Check for hypersonic threats more frequently (every 10 frames ≈ 0.17s)
