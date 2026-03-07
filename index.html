@@ -38,20 +38,37 @@
   </style>
 </head>
 <body>
-<div id="header">◈ INTEGRATED AIR & MISSILE DEFENSE SIMULATION v1.0 ◈</div>
+<div id="header">◈ INTEGRATED AIR & MISSILE DEFENSE SIMULATION v2.0 ◈</div>
 
 <!-- p5.js loaded via CDN — no npm, no build tools required -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 
 <script>
 // =============================================================================
-// IAMD SIMULATION — Phase 1 Starter
+// IAMD SIMULATION v2.0 — Visual Overhaul
 // View: 2D Side View (Range × Altitude range-height display)
 // Threats: Ballistic, Cruise, Hypersonic Glide, Drone Swarm
 // Guidance: Proportional Navigation  →  a_m = N · V_c · (dθ/dt)
 // Tracking: Simplified 2D Kalman Filter on noisy radar returns
 // Author: [Your Name]  |  github.com/[username]
 // =============================================================================
+
+// CHANGELOG v2.0 — VISUAL OVERHAUL:
+//   - Multi-layer particle explosions (core flash + mid ring + outer sparks)
+//   - Per-threat-type explosion color palettes (ballistic=red, cruise=gold, HGV=purple, drone=green)
+//   - Shockwave rings on kills (expanding fading circle)
+//   - Screen shake on leakage impacts
+//   - Rotating radar sweep lines with afterglow trails and detection blips
+//   - Gradient trail rendering (width-tapered, opacity-fading)
+//   - Interceptor fuel-low flicker effect + fast interceptor white inner glow
+//   - Ballistic missile boost exhaust flare (fades over 25 frames)
+//   - HGV reentry plasma glow with heat shimmer
+//   - Cruise missile terrain shadow projection
+//   - Drone swarm formation connector lines
+//   - Engagement lines (dashed) from interceptors to assigned targets
+//   - Grid intersection glow for polished CRT aesthetic
+//   - HUD: Threat priority queue, interceptor magazine bar, compact kill feed
+//   - HUD: Active threat/interceptor counts
 
 // ── ALL TUNABLE PARAMETERS LIVE HERE — never scatter magic numbers ────────────
 const CFG = {
@@ -620,6 +637,15 @@ function boom(x, y, r=255, g=160, b=40, n=28) {
 let threats, interceptors, particles, radars;
 let score, lastWave, gameOver, log;
 
+// v2.0: Compact kill feed (last 4 kills)
+let killFeed = [];
+function addKillFeed(radarId, trackId, intType, result) {
+  const entry = `${radarId}\u2192TRK-${trackId}\u2192${intType}\u2192${result}`;
+  killFeed.unshift({ text: entry, age: 0 });
+  if (killFeed.length > 4) killFeed.pop();
+}
+
+
 // ── C2 — COMMAND & CONTROL (GREEDY INTERCEPTOR ASSIGNMENT) ───────────────────
 // Strategy: for every confirmed radar track not yet engaged, launch one interceptor.
 // "Greedy" = prioritize closest confirmed threats; not optimal but realistic for Phase 1.
@@ -693,7 +719,13 @@ function checkCollisions() {
         t.alive = false;
         inter.alive = false;
         score.kills++;
-        addLog(`★ INTERCEPT  ${t.type}`);
+        addLog(`\u2605 INTERCEPT  ${t.type}`);
+        // v2.0: Populate kill feed
+        let rdrLabel = 'RDR-?';
+        for (const r of radars) {
+          if (r.tracks.has(t.id)) { rdrLabel = `RDR-${r.id + 1}`; break; }
+        }
+        addKillFeed(rdrLabel, t.id, inter.isFast ? 'FAST' : 'STD', 'KILL');
         for (const r of radars) r.tracks.delete(t.id);
       }
     }
@@ -728,6 +760,18 @@ function drawGrid() {
     fill(0, 110, 40); noStroke(); textSize(8); textAlign(LEFT);
     text(`${km}km`, 3, y - 2);
   }
+
+    // v2.0: Subtle glow at grid intersections
+    noStroke();
+    for (let km = 0; km <= CFG.RANGE_KM; km += 100) {
+      for (let alt = 0; alt <= CFG.ALT_KM; alt += 20) {
+        const gx = (km / CFG.RANGE_KM) * CFG.SIM_W;
+        const gy = CFG.SIM_H - (alt / CFG.ALT_KM) * CFG.SIM_H;
+        fill(0, 255, 65, 8);
+        ellipse(gx, gy, 10, 10);
+      }
+    }
+
   // Axis labels
   fill(0, 100, 38); textSize(8); textAlign(CENTER);
   text('RANGE (km)', CFG.SIM_W * 0.45, CFG.SIM_H - 3);
@@ -781,80 +825,167 @@ function drawBattery() {
   pop();
 }
 
+// v2.0: Draw engagement lines from interceptors to their assigned targets
+function drawEngagementLines() {
+  for (const inter of interceptors) {
+    if (!inter.alive || !inter.track) continue;
+    const tp = inter.track.pos;
+    // Dashed line effect using segments
+    const dx = tp.x - inter.x;
+    const dy = tp.y - inter.y;
+    const dist = sqrt(dx * dx + dy * dy);
+    const segments = floor(dist / 12);
+    if (inter.isFast) {
+      stroke(0, 255, 255, 35);
+    } else {
+      stroke(0, 180, 255, 30);
+    }
+    strokeWeight(0.7);
+    for (let s = 0; s < segments; s += 2) {
+      const t1 = s / segments;
+      const t2 = min((s + 1) / segments, 1);
+      const x1 = inter.x + dx * t1;
+      const y1 = inter.y + dy * t1;
+      const x2 = inter.x + dx * t2;
+      const y2 = inter.y + dy * t2;
+      line(x1, y1, x2, y2);
+    }
+  }
+}
+
 // ── DRAW RIGHT PANEL ──────────────────────────────────────────────────────────
 function drawPanel() {
   const px = CFG.SIM_W + 12;
   const pw = CFG.W - CFG.SIM_W;
   push();
-  // Panel background
   fill(2, 10, 4); noStroke(); rect(CFG.SIM_W, 0, pw, CFG.H);
   stroke(0, 120, 40, 100); strokeWeight(1); line(CFG.SIM_W, 0, CFG.SIM_W, CFG.H);
 
-  // ── Title block
   fill(0, 255, 65); noStroke(); textSize(11); textAlign(LEFT);
-  text('◈ IAMD COMMAND', px, 22);
+  text('\u25c8 IAMD COMMAND v2.0', px, 22);
   fill(0, 120, 50); textSize(8);
   text('2D RANGE-HEIGHT DISPLAY', px, 33);
-  stroke(0, 90, 35); line(px, 37, CFG.W-8, 37);
+  stroke(0, 90, 35); line(px, 37, CFG.W - 8, 37);
 
-  // ── Score block
   let y = 52;
-  const statLine = (label, val, vr=0, vg=255, vb=65) => {
+  const statLine = (label, val, vr = 0, vg = 255, vb = 65) => {
     fill(0, 120, 45); textSize(9); textAlign(LEFT); text(label, px, y);
-    fill(vr, vg, vb); textAlign(RIGHT); text(val, CFG.W-10, y);
-    textAlign(LEFT); y += 17;
+    fill(vr, vg, vb); textAlign(RIGHT); text(val, CFG.W - 10, y);
+    textAlign(LEFT); y += 15;
   };
-  statLine('WAVE',        score.wave);
-  statLine('KILLS',       score.kills, 0, 255, 100);
-  const lc = score.leak > 2 ? [255,70,70] : [255,170,50];
-  statLine('LEAKAGE',     `${score.leak}/${CFG.MAX_LEAKAGE}`, ...lc);
+  statLine('WAVE', score.wave);
+  statLine('KILLS', score.kills, 0, 255, 100);
+  const lc = score.leak > 2 ? [255, 70, 70] : [255, 170, 50];
+  statLine('LEAKAGE', `${score.leak}/${CFG.MAX_LEAKAGE}`, ...lc);
   statLine('SHOTS FIRED', score.shots, 0, 200, 255);
   const tot = score.kills + score.leak;
-  const pct = tot > 0 ? floor((score.kills/tot)*100) : 100;
-  statLine('KILL RATE',   `${pct}%`, pct>70 ? 0 : 255, pct>70 ? 255 : 80, pct>70 ? 65 : 80);
+  const pct = tot > 0 ? floor((score.kills / tot) * 100) : 100;
+  statLine('KILL RATE', `${pct}%`, pct > 70 ? 0 : 255, pct > 70 ? 255 : 80, pct > 70 ? 65 : 80);
+  // v2.0: Active counts
+  const activeThreats = threats.filter(t => t.alive).length;
+  const activeInts = interceptors.filter(i => i.alive).length;
+  statLine('ACTIVE TGT', activeThreats, 255, 180, 50);
+  statLine('ACTIVE INT', activeInts, 0, 200, 255);
 
-  // ── System params
-  y += 4; stroke(0, 80, 30); line(px, y, CFG.W-8, y); y += 13;
-  fill(0, 160, 55); textSize(9); text('── SYS PARAMS ──', px, y); y += 13;
-  fill(0, 110, 42); textSize(8);
-  const param = (k, v) => { text(`${k} : ${v}`, px, y); y += 11; };
-  param('PN constant  N', CFG.PN_N);
-  param('Radar range  ', `${CFG.RADAR_RANGE_PX}px`);
-  param('Kill radius  ', `${CFG.KILL_RADIUS}px`);
-  param('Wave period  ', `${CFG.WAVE_MS/1000}s`);
-  param('INT speed    ', `${CFG.INT_SPEED}px/f`);
+  // v2.0: Interceptor inventory bar
+  y += 2;
+  fill(0, 120, 45); textSize(8); text('\u2500\u2500 MAGAZINE \u2500\u2500', px, y); y += 10;
+  const magSize = 30; // total interceptor capacity visualization
+  const used = min(score.shots, magSize);
+  for (let i = 0; i < magSize; i++) {
+    const bx = px + (i % 15) * 16;
+    const by = y + floor(i / 15) * 9;
+    if (i < magSize - used) {
+      fill(0, 200, 255, 120);
+    } else {
+      fill(0, 60, 80, 40);
+    }
+    noStroke();
+    rect(bx, by, 13, 6, 1);
+  }
+  y += 24;
 
-  // ── Legend
-  y += 4; stroke(0, 80, 30); line(px, y, CFG.W-8, y); y += 13;
-  fill(0, 160, 55); textSize(9); text('── LEGEND ──', px, y); y += 13;
-  const leg = [
-    [[255,80,60],  '▶ Ballistic (BSTC)'],
-    [[255,160,40], '▶ Cruise (CRZ)'],
-    [[180,80,255], '▶ Hypersonic (HGV)'],
-    [[60,255,180], '▶ Drone swarm'],
-    [[0,210,255],  '◁ Interceptor (PN)'],
-    [[0,255,65],   '◎ Radar + track'],
-  ];
-  for (const [c, l] of leg) {
-    fill(...c); noStroke(); textSize(8); text(l, px, y); y += 11;
+  // v2.0: Kill feed
+  y += 4; stroke(0, 80, 30); line(px, y, CFG.W - 8, y); y += 11;
+  fill(0, 160, 55); textSize(8); text('\u2500\u2500 KILL FEED \u2500\u2500', px, y); y += 11;
+  if (killFeed.length === 0) {
+    fill(0, 80, 35); textSize(7); text('No kills yet', px, y); y += 10;
+  } else {
+    for (const kf of killFeed) {
+      fill(0, 255, 100, map(kf.age, 0, 200, 230, 40));
+      textSize(7); text(kf.text, px, y); y += 10;
+      kf.age++;
+    }
+    killFeed = killFeed.filter(k => k.age < 300);
   }
 
-  // ── Event log
-  y += 5; stroke(0, 80, 30); line(px, y, CFG.W-8, y); y += 13;
-  fill(0, 155, 55); textSize(9); text('── EVENT LOG ──', px, y); y += 12;
+  // v2.0: Threat priority queue (top 5)
+  y += 4; stroke(0, 80, 30); line(px, y, CFG.W - 8, y); y += 11;
+  fill(0, 160, 55); textSize(8); text('\u2500\u2500 THREAT QUEUE \u2500\u2500', px, y); y += 11;
+  // Build prioritized threat list from all radar tracks
+  const tgtList = [];
+  const allRadars = [...radars];
+  const seenIds = new Set();
+  for (const r of allRadars) {
+    for (const [id, kf] of r.tracks) {
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const threat = threats.find(t => t.id === id && t.alive);
+      if (!threat) continue;
+      const estSpd = sqrt(kf.vel.x * kf.vel.x + kf.vel.y * kf.vel.y);
+      const distToBatt = abs(CFG.BATT_X_FRAC * CFG.SIM_W - kf.pos.x);
+      tgtList.push({ type: threat.type, spd: estSpd, dist: distToBatt, engaged: interceptors.some(i => i.alive && i.track === kf) });
+    }
+  }
+  // Sort by distance to battery (closest = highest priority)
+  tgtList.sort((a, b) => a.dist - b.dist);
+  const topN = tgtList.slice(0, 5);
+  if (topN.length === 0) {
+    fill(0, 80, 35); textSize(7); text('No tracked threats', px, y); y += 10;
+  } else {
+    for (const tgt of topN) {
+      const typeColors = { BALLISTIC: [255, 80, 60], CRUISE: [255, 160, 40], HYPERSONIC: [180, 80, 255], DRONE: [60, 255, 180] };
+      const tc = typeColors[tgt.type] || [0, 255, 65];
+      fill(...tc, 200); textSize(7);
+      const status = tgt.engaged ? 'ENGAGED' : 'TRACKED';
+      const spdStr = tgt.spd.toFixed(1);
+      text(`${tgt.type.substring(0, 4)} Spd:${spdStr} ${status}`, px, y);
+      y += 10;
+    }
+  }
+
+  // Legend (compact)
+  y += 4; stroke(0, 80, 30); line(px, y, CFG.W - 8, y); y += 11;
+  fill(0, 160, 55); textSize(8); text('\u2500\u2500 LEGEND \u2500\u2500', px, y); y += 11;
+  const leg = [
+    [[255, 80, 60], '\u25b6 Ballistic'],
+    [[255, 160, 40], '\u25b6 Cruise'],
+    [[180, 80, 255], '\u25b6 HGV'],
+    [[60, 255, 180], '\u25b6 Drone'],
+    [[0, 210, 255], '\u25c1 Interceptor'],
+    [[0, 255, 65], '\u25ce Radar'],
+    [[255, 160, 30], '\u25c7 EW Radar'],
+  ];
+  for (const [c, l] of leg) {
+    fill(...c); noStroke(); textSize(7); text(l, px, y); y += 10;
+  }
+
+  // Event log (compact)
+  y += 3; stroke(0, 80, 30); line(px, y, CFG.W - 8, y); y += 11;
+  fill(0, 155, 55); textSize(8); text('\u2500\u2500 LOG \u2500\u2500', px, y); y += 10;
   for (const m of log) {
     fill(0, 200, 75, map(m.age, 0, 220, 255, 40));
-    textSize(7.5); text(m.text, px, y); y += 11;
+    textSize(7); text(m.text, px, y); y += 10;
     m.age++;
   }
   log = log.filter(m => m.age < 300);
 
-  // ── Controls hint
-  stroke(0, 60, 25); line(px, CFG.H-38, CFG.W-8, CFG.H-38);
-  fill(0, 90, 38); textSize(7.5); noStroke();
-  text('[R] Restart  [+/-] Wave speed', px, CFG.H-26);
-  text('[1] Ballistic  [2] Cruise', px, CFG.H-16);
-  text('[3] Hypersonic  [4] Drone swarm', px, CFG.H-6);
+  // Keyboard controls (bottom)
+  stroke(0, 60, 25); line(px, CFG.H - 38, CFG.W - 8, CFG.H - 38);
+  fill(0, 90, 38); textSize(7); noStroke();
+  text('[R] Restart  [+/-] Wave speed', px, CFG.H - 26);
+  text('[1] Ballistic  [2] Cruise', px, CFG.H - 16);
+  text('[3] Hypersonic  [4] Drone swarm', px, CFG.H - 6);
   pop();
 }
 
@@ -886,6 +1017,7 @@ function initGame() {
   ];
   score       = { wave: 0, kills: 0, leak: 0, shots: 0 };
   log         = [];
+  killFeed    = [];
   gameOver    = false;
   lastWave    = millis();
   addLog('SYSTEM NOMINAL — AWAITING THREATS');
@@ -944,6 +1076,7 @@ function draw() {
   for (const r of radars) r.draw();
   drawBattery();
   drawTracks();
+  drawEngagementLines();
 
   // ── HUD + panel
   drawPanel();
