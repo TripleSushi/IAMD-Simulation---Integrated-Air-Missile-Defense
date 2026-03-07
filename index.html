@@ -38,14 +38,14 @@
   </style>
 </head>
 <body>
-<div id="header">◈ INTEGRATED AIR & MISSILE DEFENSE SIMULATION v2.0 ◈</div>
+<div id="header">◈ INTEGRATED AIR & MISSILE DEFENSE SIMULATION v2.1 ◈</div>
 
 <!-- p5.js loaded via CDN — no npm, no build tools required -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
 
 <script>
 // =============================================================================
-// IAMD SIMULATION — Phase 1 Starter (v2.0 — Visual Upgrades on v1.4 base)
+// IAMD SIMULATION — Phase 1 Starter (v2.1 — Bug Fixes + Survival Extension)
 // View: 2D Side View (Range × Altitude range-height display)
 // Threats: Ballistic, Cruise, Hypersonic Glide, Drone Swarm
 // Guidance: Proportional Navigation  →  a_m = N · V_c · (dθ/dt)
@@ -146,7 +146,7 @@ const CFG = {
 
   // Game pacing
   WAVE_MS: 9000,          // ms between automatic threat waves
-  MAX_LEAKAGE: 5,         // leakage hits before game over
+  MAX_LEAKAGE: 10,        // leakage hits before game over (increased from 5 for longer survival)
 
   // Interceptor battery position (right side, protected zone)
   BATT_X_FRAC: 0.87,
@@ -358,23 +358,39 @@ class EWRadar {
   draw() {
     push();
     // v2.0: 360-degree rotating sweep (EW is elevated, scans all around)
+    // FIX: Clip sweep lines so they don't render below ground (SIM_H)
     const sweepAngle = this.sweep % TWO_PI;
     noFill();
-    // Sweep line (orange)
+    // Sweep line (orange) — clipped to ground
     stroke(255, 160, 30, 50);
     strokeWeight(1.5);
-    const sweepEndX = this.x + cos(sweepAngle) * this.rng;
-    const sweepEndY = this.y + sin(sweepAngle) * this.rng;
-    line(this.x, this.y, sweepEndX, sweepEndY);
-    // Afterglow trail
+    let sweepEndX = this.x + cos(sweepAngle) * this.rng;
+    let sweepEndY = this.y + sin(sweepAngle) * this.rng;
+    if (sweepEndY > CFG.SIM_H) {
+      // Clip: find where the line crosses ground level
+      const t = (CFG.SIM_H - this.y) / (sweepEndY - this.y);
+      sweepEndX = this.x + t * (sweepEndX - this.x);
+      sweepEndY = CFG.SIM_H;
+    }
+    if (sweepEndY <= CFG.SIM_H) {
+      line(this.x, this.y, sweepEndX, sweepEndY);
+    }
+    // Afterglow trail — also clipped
     for (let a = 1; a <= 6; a++) {
       const trailAngle = sweepAngle - a * 0.087;
       const trailAlpha = map(a, 1, 6, 28, 4);
       stroke(255, 160, 30, trailAlpha);
       strokeWeight(1);
-      const tx = this.x + cos(trailAngle) * this.rng;
-      const ty = this.y + sin(trailAngle) * this.rng;
-      line(this.x, this.y, tx, ty);
+      let tx = this.x + cos(trailAngle) * this.rng;
+      let ty = this.y + sin(trailAngle) * this.rng;
+      if (ty > CFG.SIM_H) {
+        const t = (CFG.SIM_H - this.y) / (ty - this.y);
+        tx = this.x + t * (tx - this.x);
+        ty = CFG.SIM_H;
+      }
+      if (ty <= CFG.SIM_H) {
+        line(this.x, this.y, tx, ty);
+      }
     }
     // Faint pulsing ring
     const rPulse = this.rng * (0.4 + 0.4 * abs(sin(this.sweep)));
@@ -449,8 +465,7 @@ class BallisticMissile extends Threat {
     super('BALLISTIC', 0.9);   // large RCS — easy to detect but hard to intercept at speed
     this.x  = -10 - xOffset;
     this.y  = CFG.SIM_H;      // launch from ground (left edge)
-    this.vx = CFG.SPD_BALLISTIC;
-    // vy needed to reach peak altitude ≈ 55% of SIM_H from ground.
+    // vy needed to reach peak altitude ≈ 40% of SIM_H from ground.
     // Kinematics: vy₀ = -sqrt(2·g·h_peak)  (negative = upward on canvas)
     const peakPx = CFG.SIM_H * 0.40;  // FIX v1.4: flatter trajectory reaches further downrange (was 0.55)
     this.vy = -sqrt(2 * CFG.GRAVITY_PX * peakPx);
@@ -789,7 +804,7 @@ class Interceptor {
     }
     // v2.0: Fast interceptor white inner glow (last 4 trail segments)
     if (this.isFast && this.trail.length > 2) {
-      for (let i = this.trail.length - 4; i < this.trail.length && i > 0; i++) {
+      for (let i = max(1, this.trail.length - 4); i < this.trail.length; i++) {
         stroke(255, 255, 255, 80);
         strokeWeight(0.8);
         line(this.trail[i-1].x, this.trail[i-1].y, this.trail[i].x, this.trail[i].y);
@@ -1076,7 +1091,7 @@ function checkCollisions() {
   }
   for (const t of threats) {
     if (!t.alive) continue;
-    if (t.x > CFG.SIM_W * CFG.BATT_X_FRAC) { // reached battery position = leakage
+    if (t.x >= CFG.SIM_W * CFG.BATT_X_FRAC) { // reached battery position = leakage
       boom(t.x, t.y, 255, 40, 40, 40, t.type); // red impact explosion
       boom(t.x, t.y-10, 255, 100, 0, 20, t.type);
       screenShake = 8;
@@ -1267,7 +1282,7 @@ function drawPanel() {
 
   // ── Title block
   fill(0, 255, 65); noStroke(); textSize(11); textAlign(LEFT);
-  text('◈ IAMD COMMAND v2.0', px, 22);
+  text('◈ IAMD COMMAND v2.1', px, 22);
   fill(0, 120, 50); textSize(8);
   text('2D RANGE-HEIGHT DISPLAY', px, 33);
   stroke(0, 90, 35); line(px, 37, CFG.W-8, 37);
@@ -1338,7 +1353,7 @@ function drawPanel() {
       seenIds.add(id);
       const threat = threats.find(t => t.id === id && t.alive);
       if (!threat) continue;
-      const estSpd = sqrt(kf.vel.x * kf.vel.x + kf.vel.y * kf.vel.y);
+      const estSpd = kf.speed; // FIX: use KalmanTrack.speed getter for consistency
       const distToBatt = abs(CFG.BATT_X_FRAC * CFG.SIM_W - kf.pos.x);
       tgtList.push({ type: threat.type, spd: estSpd, dist: distToBatt, engaged: interceptors.some(i => i.alive && i.track === kf) });
     }
