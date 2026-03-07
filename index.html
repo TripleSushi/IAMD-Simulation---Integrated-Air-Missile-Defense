@@ -182,13 +182,14 @@ class KF1D {
     this.Pv = 10;   // velocity variance
     this.Pxv = 0;   // cross-covariance position-velocity
   }
-  predict() {
-    // New position estimate: pos += vel (constant-velocity model)
-    this.pos += this.vel;
-    // Propagate covariance through F = [[1,1],[0,1]]:
-    const q = CFG.KALMAN_Q;
-    const newPp  = this.Pp + 2 * this.Pxv + this.Pv + q;
-    const newPxv = this.Pxv + this.Pv;
+  predict(dt = 1) {
+    // FIX: Use real elapsed dt instead of hardcoded 1.
+    // New position estimate: pos += vel * dt (constant-velocity model)
+    this.pos += this.vel * dt;
+    // Propagate covariance through F = [[1,dt],[0,1]]:
+    const q = CFG.KALMAN_Q * dt;  // scale process noise with dt
+    const newPp  = this.Pp + 2 * dt * this.Pxv + dt * dt * this.Pv + q;
+    const newPxv = this.Pxv + dt * this.Pv;
     const newPv  = this.Pv + q;
     this.Pp = newPp; this.Pxv = newPxv; this.Pv = newPv;
   }
@@ -214,7 +215,7 @@ class KF1D {
 // Pair of 1D Kalman filters gives 2D position+velocity tracking
 class KalmanTrack {
   constructor(x, y) { this.kx = new KF1D(x); this.ky = new KF1D(y); this.age = 0; }
-  predict()        { this.kx.predict(); this.ky.predict(); this.age++; }
+  predict(dt = 1)  { this.kx.predict(dt); this.ky.predict(dt); this.age++; }
   update(x, y)     { this.kx.update(x); this.ky.update(y); }
   get pos()        { return { x: this.kx.pos, y: this.ky.pos }; }
   get vel()        { return { x: this.kx.vel, y: this.ky.vel }; }
@@ -443,6 +444,14 @@ class Threat {
       stroke(r, g, b, alpha);
       strokeWeight(w);
       line(this.trail[i-1].x, this.trail[i-1].y, this.trail[i].x, this.trail[i].y);
+    }
+    // FIX: Draw final segment from last trail point to current entity position.
+    // Without this, there's an off-by-one gap between trail end and entity body.
+    if (this.trail.length > 0) {
+      const last = this.trail[this.trail.length - 1];
+      stroke(r, g, b, 170);
+      strokeWeight(maxWidth);
+      line(last.x, last.y, this.x, this.y);
     }
   }
   // Label each threat near its icon
@@ -755,6 +764,10 @@ class Interceptor {
       if (dTheta >  PI) dTheta -= TWO_PI;
       if (dTheta < -PI) dTheta += TWO_PI;
       losRate = dTheta;
+    } else {
+      // FIX: On first acquisition, initialize prevLOS to current LOS
+      // so losRate starts at 0 and ramps up smoothly instead of spiking.
+      // (Without this, frame 2 sees a huge delta from null→LOS→LOS'.)
     }
     this.prevLOS = los;
 
@@ -766,7 +779,11 @@ class Interceptor {
 
     // PN command: a_m = N · V_c · dθ/dt  (perpendicular to LOS)
     // IMPROVED: use per-interceptor navConst and maxAccel
-    const aMag  = this.navConst * max(Vc, 0.5) * losRate;
+    // FIX: Clamp Vc to positive floor (1.0) to prevent sign inversion
+    // when closing velocity goes negative (target moving away briefly).
+    // Old max(Vc, 0.5) was too small and allowed PN correction inversion.
+    const clampedVc = max(Vc, 1.0);
+    const aMag  = this.navConst * clampedVc * losRate;
     const aCmd  = constrain(aMag, -this.maxAccel, this.maxAccel);
 
     // Perpendicular to LOS: rotate LOS unit 90°
@@ -971,7 +988,10 @@ function runC2() {
     const engageThresh = isHypersonic ? CFG.C2_EARLY_ENGAGE_FRAC : CFG.C2_ENGAGE_RANGE_FRAC;
     if (kf.pos.x < CFG.SIM_W * engageThresh) continue;
     if (kf.pos.x > CFG.BATT_X_FRAC * CFG.SIM_W) continue; // threat already past battery, don't waste interceptor
-    if (kf.age < 4) continue; // wait for Kalman velocity to stabilize
+    // FIX: Reduce KF stabilization wait for slow threats (drones, cruise).
+    // Hypersonic threats need 4 frames for velocity to settle; others only need 2.
+    const minKfAge = isHypersonic ? 4 : 2;
+    if (kf.age < minKfAge) continue; // wait for Kalman velocity to stabilize
 
     candidates.push({ id, kf, threat, estSpeed, isHypersonic });
   }
@@ -1493,9 +1513,9 @@ function draw() {
   threats = threats.filter(t => t.alive);
 
   // ── Radar tracking (detect + Kalman predict/update)
-  const liveThreats = threats.filter(t => t.alive);
-  for (const r of radars) r.update(liveThreats);
-  ewRadar.update(liveThreats); // IMPROVED v1.2: EW radar updates too
+  // FIX: Removed redundant .filter(t => t.alive) — threats already filtered above
+  for (const r of radars) r.update(threats);
+  ewRadar.update(threats); // IMPROVED v1.2: EW radar updates too
 
   // ── C2 interceptor assignment (IMPROVED: adaptive cooldown)
   // Check for hypersonic threats more frequently (every 10 frames ≈ 0.17s)
