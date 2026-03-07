@@ -5,7 +5,7 @@
 ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-deployed-22863a?style=flat-square&logo=github)
 ![License: MIT](https://img.shields.io/badge/License-MIT-00cc40?style=flat-square)
 
-> A browser-based 2D air & missile defense simulation featuring **Proportional Navigation guidance**, **Kalman filter tracking**, and **probabilistic radar detection** - all running in a single `index.html` with no build tools.
+[> A browser-based 2D air & missile defense simulation featuring **Proportional Navigation guidance**, **Kalman filter tracking**, and **probabilistic radar detection** - all running in a single `index.html` with no build tools. Click to test.](https://definitelynotguru.github.io/IAMD-Simulation---Integrated-Air-Missile-Defense/)
 
 ---
 
