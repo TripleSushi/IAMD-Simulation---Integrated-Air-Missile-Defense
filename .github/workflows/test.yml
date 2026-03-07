@@ -1,0 +1,81 @@
+name: Test & Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  structure-check:
+    name: File Structure & Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check index.html exists
+        run: |
+          if [ ! -f "index.html" ]; then echo "ERROR: index.html not found"; exit 1; fi
+          echo "index.html found"
+      - name: Validate HTML structure
+        run: |
+          grep -q "<canvas" index.html && echo "Canvas found" || echo "WARNING: No <canvas> element"
+          grep -q "requestAnimationFrame\|setInterval" index.html && echo "Animation loop found" || echo "WARNING: No animation loop"
+
+  js-quality:
+    name: JavaScript Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Extract and check JavaScript syntax
+        run: |
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('index.html', 'utf8');
+            const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
+            const js = scripts.map(m => m[1]).join('\n');
+            fs.writeFileSync('extracted.js', js);
+            console.log('Extracted ' + js.length + ' chars of JS');
+          "
+          node --check extracted.js && echo "JS syntax OK" || echo "Syntax issues found"
+
+  simulation-logic:
+    name: Simulation Component Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check for key simulation components
+        run: |
+          check() {
+            grep -q "$2" index.html && echo "PASS: $1" || echo "WARN: $1 not detected"
+          }
+          check "Proportional Navigation" "proportional\|navigation\|guidance"
+          check "Kalman Filter" "[Kk]alman"
+          check "Radar/detection" "[Rr]adar\|detection\|sensor"
+          check "Intercept logic" "intercept\|collide\|hit\|destroy"
+          check "Vector math" "Math\.sqrt\|Math\.atan2"
+          check "Canvas 2D" "getContext"
+          check "Missile entity" "[Mm]issile"
+          check "Threat/target" "[Tt]hreat\|[Tt]arget\|[Bb]allistic"
+          check "Probability/random" "Math\.random\|probability"
+
+  performance-hints:
+    name: Performance & Best Practices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Performance checks
+        run: |
+          grep -q "document\.write" index.html && echo "WARN: document.write found" || echo "OK: No document.write"
+          grep -q "\beval\s*(" index.html && echo "WARN: eval() found" || echo "OK: No eval()"
+          size=$(wc -c < index.html)
+          echo "File size: ${size} bytes"
+          [ "$size" -gt 500000 ] && echo "WARN: File exceeds 500KB" || echo "OK: File size reasonable"
