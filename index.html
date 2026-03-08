@@ -291,7 +291,7 @@ class KF1D {
 
 // Pair of 1D Kalman filters gives 2D position+velocity tracking
 class KalmanTrack {
-  constructor(x, y) { this.kx = new KF1D(x); this.ky = new KF1D(y); this.age = -1; } // FIX LOW-3: start at -1 so first predict() brings age to 0; minKfAge checks are now semantically correct
+  constructor(x, y, id = null) { this.kx = new KF1D(x); this.ky = new KF1D(y); this.age = -1; this.id = id; } // FIX LOW-3: start at -1 so first predict() brings age to 0; minKfAge checks are now semantically correct // FIX BUG-H1: store id so cross-cycle engagement dedup works
   predict(dt = 1)  { this.kx.predict(dt); this.ky.predict(dt); this.age++; }
   update(x, y)     { this.kx.update(x); this.ky.update(y); }
   get pos()        { return { x: this.kx.pos, y: this.ky.pos }; }
@@ -334,7 +334,7 @@ class Radar {
         const mx = t.x + randomGaussian(0, 4);
         const my = t.y + randomGaussian(0, 4);
         if (!this.tracks.has(t.id)) {
-          this.tracks.set(t.id, new KalmanTrack(mx, my)); // first detection
+          this.tracks.set(t.id, new KalmanTrack(mx, my, t.id)); // first detection // FIX BUG-H1: pass t.id so KalmanTrack.id is set
         } else {
           const kf = this.tracks.get(t.id);
           // FIX MED-1: predict() moved to per-frame loop in draw()
@@ -423,7 +423,7 @@ class EWRadar {
         const mx = t.x + randomGaussian(0, 6); // slightly noisier than ground radar
         const my = t.y + randomGaussian(0, 6);
         if (!this.tracks.has(t.id)) {
-          this.tracks.set(t.id, new KalmanTrack(mx, my));
+          this.tracks.set(t.id, new KalmanTrack(mx, my, t.id)); // FIX BUG-H1: pass t.id so KalmanTrack.id is set
         } else {
           const kf = this.tracks.get(t.id);
           // FIX MED-1: predict() moved to per-frame loop in draw()
@@ -520,8 +520,8 @@ class Threat {
     this.vx = 0; this.vy = 0;
   }
   saveTrail() {
+    if (this.trail.length >= 45) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 45 as intended
     this.trail.push({ x: this.x, y: this.y });
-    if (this.trail.length >= 45) this.trail.shift(); // FIX LOW-2: strict max 45 (was > 45, allowing 46 transiently)
   }
   drawTrail(r, g, b, maxWidth = 3, minWidth = 0.5) {
     noFill();
@@ -744,8 +744,8 @@ class Drone extends Threat {
   }
   // v2.0: Shorter trail for small drones
   saveTrail() {
+    if (this.trail.length >= 18) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 18 as intended
     this.trail.push({ x: this.x, y: this.y });
-    if (this.trail.length >= 18) this.trail.shift(); // FIX LOW-2: strict max 18 (was > 18, allowing 19 transiently)
   }
   update(peers) {
     this.saveTrail();
@@ -829,8 +829,8 @@ class Interceptor {
   update() {
     this.age++;
     if (this.age > CFG.INT_MAX_AGE) { this.alive = false; return; }
+    if (this.trail.length >= 28) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 28 as intended
     this.trail.push({ x: this.x, y: this.y });
-    if (this.trail.length >= 28) this.trail.shift();
 
     const tp = this.track.pos;
     const tv = this.track.vel;
