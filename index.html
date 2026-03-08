@@ -45,7 +45,7 @@
 
 <script>
 // =============================================================================
-// IAMD SIMULATION — v2.3 — SLS Tiered Defense + Engagement Zones + preferredThreats
+// IAMD SIMULATION — v2.3.1 — SLS Tiered Defense + Engagement Zones + preferredThreats
 // View: 2D Side View (Range × Altitude range-height display)
 // Threats: Ballistic, Cruise, Hypersonic Glide, Drone Swarm
 // Guidance: Proportional Navigation  →  a_m = N · V_c · (dθ/dt)
@@ -133,6 +133,19 @@
 //   LOW:
 //   - [L1] KalmanTrack.speed: sqrt() changed to Math.sqrt() for safety.
 //   - [L2] Lead damping 0.6 magic number moved to CFG.LEAD_DAMPING.
+// CHANGELOG v2.3.1 — PN GUIDANCE BUG HUNT FIXES (auto-fixed 2026-03-08):
+//   HIGH:
+//   - [H1] PN losRate not divided by dt: LOS angular rate was frame-rate-dependent.
+//     Now computed as dTheta/dt for consistent guidance regardless of frame rate.
+//   - [H2] PN acceleration impulse not scaled by dt: velocity change from PN accel
+//     was applied as instantaneous impulse. Now multiplied by dt for proper integration.
+//   - [H3] prevX/prevY stale on early return (rMag<0.5): swept-volume collision check
+//     used 2+ frame old positions. Now updates prevX/prevY before early return.
+//   - [H4] Vc<0 self-destruct bypasses SLS: overshoot silently killed interceptor.
+//     Now triggers SLS step-down so C2 can re-engage the threat at next tier.
+//   - [H5] Ghost-pruned track stale guidance: after ghost pruning removed a track,
+//     interceptors continued guiding on frozen coordinates. Now detects orphaned tracks
+//     and triggers SLS re-engagement for clean handoff.
 //   - [L3] Screen shake push()/pop() verified already correct.
 //   - [L4] killFeed mutation separated from render (drawPanel) to update phase.
 //   - [L5] Delta-time calculation added (capped at 3x, 60fps baseline).
@@ -887,6 +900,25 @@ class Interceptor {
   update(dt = 1) { // FIX HIGH-2: accept dt for frame-rate-independent PN guidance
     this.age++;
     if (this.age > CFG.INT_MAX_AGE) { this.alive = false; return; }
+
+    // FIX H5: Check if assigned target track is still valid after ghost pruning.
+    // If the track was pruned (no radar carries it), the KalmanTrack object is
+    // orphaned and will never receive predict/update calls — its coordinates freeze.
+    // Trigger SLS re-engagement so C2 can assign a new interceptor to the threat.
+    if (this.trackId !== null) {
+      let trackStillValid = false;
+      for (const r of [...radars, ewRadar]) {
+        if (r.tracks.has(this.trackId)) { trackStillValid = true; break; }
+      }
+      if (!trackStillValid) {
+        this.alive = false;
+        const assessment = ensureTrackAssessment(this.trackId);
+        assessment.waitingUntil = frameCount + CFG.SLS_ASSESS_DELAY;
+        addLog(`${this.tierKey} LOST TRACK [TRK-${this.trackId}] → SLS LOOK`);
+        return;
+      }
+    }
+
     if (this.trail.length >= 28) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 28 as intended
     this.trail.push({ x: this.x, y: this.y });
 
@@ -901,23 +933,38 @@ class Interceptor {
       let dTheta = los - this.prevLOS;
       if (dTheta >  PI) dTheta -= TWO_PI;
       if (dTheta < -PI) dTheta += TWO_PI;
-      losRate = dTheta;
+      losRate = dTheta / dt; // FIX H1: divide by dt for frame-rate-independent LOS rate
     }
     this.prevLOS = los;
 
-    if (rMag < 0.5) return;
+    if (rMag < 0.5) {
+      // FIX H3: update prevX/prevY before early return so swept-volume
+      // collision check doesn't use stale positions from 2+ frames ago
+      this.prevX = this.x;
+      this.prevY = this.y;
+      return;
+    }
 
     const relVx = tv.x - this.vx, relVy = tv.y - this.vy;
     const losUx = rx / rMag,       losUy = ry / rMag;
     const Vc = -(relVx * losUx + relVy * losUy);
-    // FIX v2.1-H3: Self-destruct on overshoot (Vc < 0) instead of wrong-way steering
-    if (Vc < 0) { this.alive = false; return; }
+    // FIX H4: Vc<0 (overshoot) triggers SLS re-engagement instead of silent self-destruct
+    if (Vc < 0) {
+      this.alive = false;
+      // Trigger SLS step-down so C2 can re-engage this threat at the next tier
+      if (this.trackId !== null) {
+        const assessment = ensureTrackAssessment(this.trackId);
+        assessment.waitingUntil = frameCount + CFG.SLS_ASSESS_DELAY;
+        addLog(`${this.tierKey} OVERSHOOT [Vc<0] → SLS LOOK`);
+      }
+      return;
+    }
     const clampedVc = max(Vc, 0.5);
     const aMag  = this.navConst * clampedVc * losRate;
     const aCmd  = constrain(aMag, -this.maxAccel, this.maxAccel);
 
-    this.vx += aCmd * (-losUy);
-    this.vy += aCmd * ( losUx);
+    this.vx += aCmd * (-losUy) * dt; // FIX H2: scale acceleration impulse by dt
+    this.vy += aCmd * ( losUx) * dt; // FIX H2: frame-rate-independent velocity change
 
     const spd = sqrt(this.vx*this.vx + this.vy*this.vy);
     if (spd > 1.0) { // FIX v2.1-M2: increase normalization guard from 0.01 to 1.0 for stability
