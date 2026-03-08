@@ -212,7 +212,7 @@ const CFG = {
       killRadius: 24,
       engageAltMin: 0.65,
       engageAltMax: 0.25,
-      engageYMinFrac: 0.25,
+      engageYMinFrac: 0.35, // FIX MEDIUM-1: was 0.25, causing 56px overlap with UPPER band
       engageYMaxFrac: 0.65,
       preferredThreats: ['cruise', 'ballistic', 'hypersonic'],
     },
@@ -230,7 +230,7 @@ const CFG = {
       killRadius: 18,
       engageAltMin: 1.0,
       engageAltMax: 0.55,
-      engageYMinFrac: 0.55,
+      engageYMinFrac: 0.65, // FIX MEDIUM-1: was 0.55, causing 56px overlap with MIDDLE band
       engageYMaxFrac: 1.00,
       preferredThreats: ['drone', 'cruise'],
     },
@@ -569,7 +569,8 @@ class Threat {
     this.vx = 0; this.vy = 0;
     // SLS engagement tracking
     this.engagementHistory = [];  // [{tier, result:'hit'|'miss'}]
-    this.assessmentTimer = 0;     // frames remaining in SLS look phase
+    // FIX MEDIUM-3: assessmentTimer removed — was decremented each frame but never read.
+    // C2 exclusively uses slsState.waitingUntil for re-engagement gating.
   }
   saveTrail() {
     if (this.trail.length >= 45) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 45 as intended
@@ -621,12 +622,12 @@ class BallisticMissile extends Threat {
     this.vx = CFG.SPD_BALLISTIC * 1.2;  // FIX v1.4: slightly faster horizontal to reach defended zone
     this.spawnAge = 0; // v2.0: frame counter for boost exhaust flare
   }
-  update() {
+  update(dt = 1) { // FIX HIGH-2: accept dt for frame-rate-independent physics
     this.saveTrail();
     this.spawnAge++;
-    this.vy += CFG.GRAVITY_PX; // gravitational acceleration (adds to vy → increases downward speed)
-    this.x  += this.vx;
-    this.y  += this.vy;
+    this.vy += CFG.GRAVITY_PX * dt; // gravitational acceleration scaled by dt
+    this.x  += this.vx * dt;
+    this.y  += this.vy * dt;
     // FIX MED-1: Ballistic missile ground impact — spawn explosion + log instead of silent death
     if (this.y > CFG.SIM_H + 5) {
       boom(this.x, CFG.SIM_H, 180, 100, 40, 12, this.type); // ground impact dust
@@ -675,11 +676,11 @@ class CruiseMissile extends Threat {
     this.vy = 0;
     this.phase = random(TWO_PI); // sinusoidal altitude variation phase
   }
-  update() {
+  update(dt = 1) { // FIX HIGH-2: accept dt for frame-rate-independent physics
     this.saveTrail();
-    this.phase += 0.035;
-    this.y  += sin(this.phase) * 0.25; // mild terrain-following undulation
-    this.x  += this.vx;
+    this.phase += 0.035 * dt;
+    this.y  += sin(this.phase) * 0.25 * dt; // mild terrain-following undulation, scaled by dt
+    this.x  += this.vx * dt;
     if (this.x > CFG.SIM_W + 5) this.alive = false;
   }
   draw() {
@@ -726,13 +727,13 @@ class HypersonicGlide extends Threat {
     // being more detectable. Real HGVs maneuver aggressively in terminal phase.
     this.wobAmp   = random(0.3, 0.8);
   }
-  update() {
+  update(dt = 1) { // FIX HIGH-2: accept dt for frame-rate-independent physics
     this.saveTrail();
-    this.wobPhase += 0.09;
-    this.vy += 0.008; // IMPROVED: stronger gravity pull accelerates descent
+    this.wobPhase += 0.09 * dt;
+    this.vy += 0.008 * dt; // IMPROVED: stronger gravity pull accelerates descent, scaled by dt
     // Lateral (vertical on screen) wobble simulates skip-glide maneuver
-    this.y  += this.vy + sin(this.wobPhase) * this.wobAmp;
-    this.x  += this.vx;
+    this.y  += (this.vy + sin(this.wobPhase) * this.wobAmp) * dt;
+    this.x  += this.vx * dt;
     if (this.x > CFG.SIM_W + 5 || this.y > CFG.SIM_H + 5) this.alive = false;
   }
   draw() {
@@ -799,11 +800,11 @@ class Drone extends Threat {
     if (this.trail.length >= 18) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 18 as intended
     this.trail.push({ x: this.x, y: this.y });
   }
-  update(peers) {
+  update(dt = 1, peers) { // FIX HIGH-2: accept dt for frame-rate-independent physics
     this.saveTrail();
     this.vx = max(this.vx, 0.55); // always advance toward target
     this.applyBoids(peers);
-    this.x += this.vx; this.y += this.vy;
+    this.x += this.vx * dt; this.y += this.vy * dt;
     if (this.x > CFG.SIM_W+5 || this.y<-10 || this.y>CFG.SIM_H+10) this.alive=false;
   }
   draw() {
@@ -878,7 +879,7 @@ class Interceptor {
     this.trail = [];
     this.age   = 0;
   }
-  update() {
+  update(dt = 1) { // FIX HIGH-2: accept dt for frame-rate-independent PN guidance
     this.age++;
     if (this.age > CFG.INT_MAX_AGE) { this.alive = false; return; }
     if (this.trail.length >= 28) this.trail.shift(); // FIX BUG-L1: check before push so steady-state max = 28 as intended
@@ -923,7 +924,7 @@ class Interceptor {
     }
     this.prevX = this.x;
     this.prevY = this.y;
-    this.x += this.vx; this.y += this.vy;
+    this.x += this.vx * dt; this.y += this.vy * dt; // FIX HIGH-2: scale position by dt
     if (!isFinite(this.x) || !isFinite(this.y)) {
       this.alive = false; return;
     }
@@ -1275,6 +1276,7 @@ function checkCollisions() {
           t.alive = false;
           score.kills++;
           score.tierStats[inter.tierKey].hit++;
+          if (t.engagementHistory.length >= 5) t.engagementHistory.shift(); // FIX MEDIUM-2: cap to last 5 to prevent unbounded growth
           t.engagementHistory.push({ tier: inter.tierKey, result: 'hit' });
           addLog(`${inter.tierKey} HIT [${t.type}]`);
           addKillFeed('C2', t.id, inter.tierKey, `HIT ${nf(inter.sspk, 1, 2)}`);
@@ -1282,8 +1284,9 @@ function checkCollisions() {
         } else {
           boom(t.x, t.y, c[0], c[1], c[2], 12, null);
           score.tierStats[inter.tierKey].miss++;
+          if (t.engagementHistory.length >= 5) t.engagementHistory.shift(); // FIX MEDIUM-2: cap to last 5 to prevent unbounded growth
           t.engagementHistory.push({ tier: inter.tierKey, result: 'miss' });
-          t.assessmentTimer = CFG.SLS_ASSESS_DELAY;
+          // FIX MEDIUM-3: removed t.assessmentTimer set — field eliminated, slsState.waitingUntil handles re-engagement delay
           addLog(`${inter.tierKey} MISS [${t.type}] LOOK`);
           addKillFeed('C2', t.id, inter.tierKey, `MISS ${nf(inter.sspk, 1, 2)}`);
         }
@@ -1332,7 +1335,9 @@ function drawEngagementLines() {
     const dy = tp.y - inter.y;
     const dist = sqrt(dx * dx + dy * dy);
     const segments = floor(dist / 12);
-    if (inter.isFast) {
+    // FIX HIGH-1: inter.isFast was never assigned in v2.3 constructor (uses tierKey).
+    // Use tierKey to select the correct stroke color for UPPER vs non-UPPER interceptors.
+    if (inter.tierKey === 'UPPER') {
       stroke(0, 255, 255, 35);
     } else {
       stroke(0, 180, 255, 30);
@@ -1766,10 +1771,9 @@ function draw() {
   const liveDrones = threats.filter(t => t.type==='DRONE' && t.alive);
   for (const t of threats) {
     if (!t.alive) continue;
-    if (t.type === 'DRONE') t.update(liveDrones);
-    else t.update();
-    // SLS: decrement assessment timer each frame
-    if (t.assessmentTimer > 0) t.assessmentTimer--;
+    if (t.type === 'DRONE') t.update(dt, liveDrones); // FIX HIGH-2: pass dt for frame-rate-independent physics
+    else t.update(dt);
+    // FIX MEDIUM-3: assessmentTimer decrement removed — field eliminated, dead computation
   }
   threats = threats.filter(t => t.alive);
 
@@ -1790,7 +1794,7 @@ function draw() {
   // measurement at time k). Previous order (update then predict) was reversed,
   // causing velocity estimates to lag one frame behind measurements.
   for (const r of [...radars, ewRadar]) {
-    for (const [, kf] of r.tracks) kf.predict();
+    for (const [, kf] of r.tracks) kf.predict(dt); // FIX HIGH-2: pass computed dt for frame-rate-independent Kalman predict
   }
   // Now apply measurements at the current (already-predicted) state
   for (const r of radars) r.update(threats);
@@ -1822,7 +1826,7 @@ function draw() {
   }
 
   // ── Interceptor updates (PN guidance)
-  for (const i of interceptors) if (i.alive) i.update();
+  for (const i of interceptors) if (i.alive) i.update(dt); // FIX HIGH-2: pass dt for frame-rate-independent PN guidance
   interceptors = interceptors.filter(i => i.alive);
 
   // ── Outcome check (MOVED v1.4: before drawing so dead objects don't render for 1 frame)
