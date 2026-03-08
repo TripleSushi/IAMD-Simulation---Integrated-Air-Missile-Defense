@@ -1,41 +1,110 @@
-# ◈ IAMD Simulation - Integrated Air & Missile Defense
+# IAMD Simulation - Integrated Air & Missile Defense
 
 ![p5.js](https://img.shields.io/badge/p5.js-v1.9.4-ED225D?style=flat-square&logo=p5dotjs)
 ![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=flat-square&logo=javascript)
 ![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-deployed-22863a?style=flat-square&logo=github)
 ![License: MIT](https://img.shields.io/badge/License-MIT-00cc40?style=flat-square)
 
-> A browser-based 2D air & missile defense simulation featuring **Proportional Navigation guidance**, **Kalman filter tracking**, and **probabilistic radar detection** - all running in a single `index.html` with no build tools. Click to test.
+> A browser-based 2D air and missile defense simulation with **layered interceptor tiers**, **Shoot-Look-Shoot engagement doctrine**, **Proportional Navigation guidance**, **Kalman filter tracking**, and **probabilistic radar detection**. Everything runs in a single `index.html` with no build tools.
 
-[Click here to test the simulation](https://definitelynotguru.github.io/IAMD-Simulation---Integrated-Air-Missile-Defense/)
----
-
-<!-- HERO GIF PLACEHOLDER — record with LICEcap or ShareX and replace below -->
-![IAMD Simulation Demo](https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExNDM1MHNvZHR5NnZsOHgzNjZ3azA1M3Q2cmFzbWxsOGM2amxsNml0aSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/7oXHjHjxaj5FwTj08p/giphy.gif)
-<!-- Suggested recording: ~20s clip showing a drone swarm wave intercepted + one HGV leaking through -->
+[**Try the live simulation**](https://definitelynotguru.github.io/IAMD-Simulation---Integrated-Air-Missile-Defense/)
 
 ---
 
-## ▶ One-Click Deploy (GitHub Pages)
+<!-- HERO GIF PLACEHOLDER - record with LICEcap or ShareX and replace below -->
+![IAMD Simulation Demo](https://media4.giphy.com/media/v1.Y2lkPTc5MGI3NjExNDM1MHNvZHR5NnZsOHgzNjZ3azA1M3Q2cmFzbWxsOGM2amxsNml0YSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/7oXHjHjxaj5FwTj08p/giphy.gif)
+<!-- Suggested recording: ~20s clip showing tiered interceptors engaging a mixed threat wave -->
 
-```bash
-# 1. Fork this repo
-# 2. Go to Settings → Pages → Source: "Deploy from branch" → main → / (root)
-# 3. GitHub will give you a live URL in ~60 seconds
-# 4. Share the link - it runs in any browser, no installs
+---
+
+## Features
+
+### Layered Defense Architecture
+Three interceptor tiers modeled after real-world IAMD layered defense:
+
+| Tier | Analog | Color | Speed | SSPK | Preferred Threats |
+|------|--------|-------|-------|------|-------------------|
+| **UPPER** | THAAD | Red | 14 | 80% | Ballistic, Hypersonic |
+| **MIDDLE** | Patriot PAC-3 | Blue | 10 | 75% | Cruise, Ballistic |
+| **LOWER** | SHORAD | Green | 8 | 70% | Drones, Cruise |
+
+Each tier has its own engagement zone (HIMEZ / LOMEZ / SHORADEZ), magazine capacity, and cooldown timing. Zone bands are drawn on screen so you can see where each tier operates.
+
+### Shoot-Look-Shoot (SLS) Doctrine
+The C2 system fires, waits for an assessment window, then re-engages with the next tier down if the first shot missed. This cascading logic means a ballistic missile might get a THAAD shot first, then a PAC-3 follow-up if it survives, rather than wasting two THAAD rounds.
+
+### Proportional Navigation Guidance
+All interceptors steer using the standard PN law:
+
+```
+a_m = N * V_c * (d_theta/dt)
 ```
 
-Or clone and open directly:
-```bash
-git clone https://github.com/definitelynotguru/IAMD-Simulation---Integrated-Air-Missile-Defense.git
-cd iamd-sim
-open index.html   # macOS
-# or just drag index.html into your browser
+- `a_m` - commanded lateral acceleration
+- `N` - navigation constant (3.5 to 4.5 depending on tier)
+- `V_c` - closing velocity
+- `d_theta/dt` - line-of-sight rate
+
+If the LOS angle stops changing, both objects are on a collision course. PN exploits this geometry to guide intercepts without needing to predict exact future positions.
+
+### Kalman Filter Tracking
+Noisy radar returns are fused into smooth tracks using a linear Kalman filter:
+
 ```
+Predict:  x_pred = F * x
+          P_pred = F * P * F^T + Q
+Update:   K = P_pred * H^T * (H * P_pred * H^T + R)^(-1)
+          x = x_pred + K * (z - H * x_pred)
+          P = (I - K * H) * P_pred
+```
+
+Each track maintains its own covariance matrix. You can see the uncertainty ellipses around tracks shrink as the filter converges.
+
+### Radar Detection Model
+Detection is probabilistic, not binary. Each scan computes:
+
+```
+SNR = (P_tx * G^2 * lambda^2 * RCS) / ((4*pi)^3 * k_B * T_s * R^4)
+P_d = 1 - exp(-SNR/2)
+```
+
+Drones with high RCS light up early. HGVs with low RCS can slip through several scans before being acquired.
 
 ---
 
-## 🎮 Controls
+## Threat Types
+
+| Threat | Speed | RCS | Behavior |
+|--------|-------|-----|----------|
+| **Ballistic** | Fast (8-12) | High | Parabolic arc, gravity-driven re-entry |
+| **Cruise** | Medium (4-6) | Med | Low-altitude weaving, terrain-following |
+| **HGV** | Very fast (14-18) | Low | Skip-glide trajectory, hard to track |
+| **Drone Swarm** | Slow (2-3) | Tiny | Boids flocking (separation + alignment + cohesion) |
+
+### Boids Flocking (Drone Swarms)
+Drone swarms use Craig Reynolds' three-rule algorithm:
+- **Separation** - avoid crowding neighbors
+- **Alignment** - steer toward average heading
+- **Cohesion** - move toward average position
+
+Each drone is individually tracked by radar and requires its own interceptor.
+
+---
+
+## HUD and Stats
+
+The simulation displays real-time information:
+- **Per-tier magazine bars** showing remaining rounds for UPPER, MIDDLE, and LOWER
+- **Fire / Hit / Miss counters** broken down by tier
+- **SLS re-engage counter** tracking how many cascade re-engagements have occurred
+- **Kill feed** with tier labels showing which interceptor type scored each kill
+- **Engagement zone bands** (HIMEZ / LOMEZ / SHORADEZ) drawn on the canvas
+- **Radar sweep** with detection probability visualization
+- **Track uncertainty ellipses** from the Kalman filter covariance
+
+---
+
+## Controls
 
 | Key | Action |
 |-----|--------|
@@ -46,86 +115,61 @@ open index.html   # macOS
 | `4` | Spawn drone swarm (Boids AI) |
 | `+` / `-` | Increase / decrease auto-wave frequency |
 
-**C2 is automatic** - the Command & Control system detects tracks via Kalman filter and auto-assigns interceptors using a greedy assignment algorithm.
+**C2 is fully automatic.** The system detects tracks via Kalman filter, classifies threats by altitude band, selects the best-fit interceptor tier, and fires using the SLS doctrine.
 
 ---
 
-## ⚙ Physics Explainer
+## Deploy
 
-This simulation implements real aerospace guidance and sensor mathematics - simplified for real-time browser rendering but structurally faithful to operational systems.
+### GitHub Pages (one click)
 
-### Proportional Navigation (PN Guidance)
-All interceptors use the standard military guidance law:
-
-```
-a_m = N · V_c · (dθ/dt)
-```
-
-- `a_m` - commanded acceleration (perpendicular to line-of-sight)
-- `N` - navigation constant (set to 4; real SAMs use 3–5)
-- `V_c` - closing velocity between missile and target
-- `dθ/dt` - line-of-sight angular rate (computed each frame)
-
-**Key insight:** if the LOS angle isn't changing (`dθ/dt = 0`), both objects are guaranteed to collide - PN exploits this geometry to steer intercepts without predicting exact future position.
-
-### Kalman Filter Tracking
-Radar measurements are noisy (±4 px Gaussian noise added per detection). A two-state Kalman filter estimates true position and velocity from these noisy returns:
-
-```
-Predict:  x̂ = F·x̂_prev,    P = F·P·Fᵀ + Q
-Update:   K = P·Hᵀ·(H·P·Hᵀ + R)⁻¹
-          x̂ = x̂ + K·(z − H·x̂)
+```bash
+# 1. Fork this repo
+# 2. Settings > Pages > Source: "Deploy from branch" > main > / (root)
+# 3. Live URL in ~60 seconds
+# 4. Share the link - runs in any browser, no installs
 ```
 
-Green crosshairs on-screen show the Kalman-estimated track position - watch them lag slightly behind fast hypersonic threats!
+### Local
 
-### Radar Detection Probability
-Based on the radar range equation (R⁴ power law):
-
+```bash
+git clone https://github.com/definitelynotguru/IAMD-Simulation---Integrated-Air-Missile-Defense.git
+cd IAMD-Simulation---Integrated-Air-Missile-Defense
+open index.html   # macOS
+# or just drag index.html into your browser
 ```
-P_detect = 1 / (1 + (R/R_max)^4) × (σ/σ_nom)
-```
-
-- `σ` (RCS) varies by threat type: drones `σ=0.05` (stealthy), ballistic `σ=0.9` (easy to detect)
-- Low RCS threats may ghost through radar coverage undetected → leakage
-
-### Threat Types
-| Threat | RCS | Speed | Behavior |
-|--------|-----|-------|---------|
-| Ballistic ICBM | 0.9 | Medium | Parabolic arc via `y = vy·t − ½g·t²` |
-| Cruise missile | 0.4 | Slow | Constant altitude + sinusoidal undulation |
-| Hypersonic HGV | 0.6 | Very fast | Shallow glide with evasive wobble |
-| Drone swarm | 0.05 | Slow | Boids flocking (separation + alignment + cohesion) |
 
 ---
 
-## 🗂 Architecture (Modular - easy to extend)
+## Tech Stack
 
-```
-index.html
-├── CFG {}              — all tunable params (one place)
-├── KF1D / KalmanTrack  — decoupled 2D Kalman filter
-├── Radar               — detection prob + track management
-├── Threat subclasses   — Ballistic, Cruise, Hypersonic, Drone
-├── Interceptor         — PN guidance law
-├── Particle            — explosion effects
-├── C2 (runC2)          — greedy interceptor assignment
-└── setup/draw          — p5.js main loop
-```
-
-### Planned Phase 2 Additions
-- [ ] Jamming / ECM reducing radar `P_detect`
-- [ ] MIRV decoys splitting from ballistic re-entry
-- [ ] Auction-based interceptor assignment (replace greedy)
-- [ ] Realistic acceleration limits with energy management
-- [ ] ML-based threat classification (TensorFlow.js)
+| Component | Technology |
+|-----------|------------|
+| **Rendering** | [p5.js](https://p5js.org) v1.9.4 (Canvas 2D) |
+| **Language** | JavaScript ES6+ (~1,800 lines) |
+| **Architecture** | Single `index.html`, zero build tools, one external dependency |
+| **Styling** | Inline CSS, CRT terminal aesthetic with scanline overlay and phosphor glow |
+| **Font** | Share Tech Mono (Google Fonts) |
+| **CI/CD** | GitHub Actions (deploy, lint, test) |
 
 ---
 
-## 📜 License
+## CI/CD
 
-MIT — fork freely, credit appreciated.
+Three GitHub Actions workflows run on push:
+
+| Workflow | What it does |
+|----------|-------------|
+| `deploy.yml` | Auto-deploys to GitHub Pages on push to main |
+| `lint.yml` | HTMLHint linting + Lychee link checking |
+| `test.yml` | JS syntax validation (Node.js 20), component checks, performance checks |
 
 ---
 
-*Built with [p5.js](https://p5js.org/) · Physics from open aerospace textbooks · No external APIs, no backend, no npm — just open `index.html`*
+## License
+
+MIT - do whatever you want, just don't blame me if it doesn't actually shoot down real missiles.
+
+---
+
+*Built with [p5.js](https://p5js.org) - the creative coding library that makes Canvas fun.*
