@@ -211,6 +211,8 @@ class KF1D {
     const newPxv = this.Pxv + dt * this.Pv;
     const newPv  = this.Pv + q;
     this.Pp = newPp; this.Pxv = newPxv; this.Pv = newPv;
+    // FIX MED-3: Cap covariance growth during sparse-measurement periods
+    this.Pp = min(this.Pp, 5000);
   }
   update(meas) {
     // Innovation: difference between measurement and prediction
@@ -228,6 +230,9 @@ class KF1D {
     this.Pp  -= Kp * this.Pp;
     this.Pxv -= Kp * this.Pxv;
     this.Pv  -= Kv * oldPxv;    // FIX v1.4: use pre-mutation Pxv value
+    // FIX MED-3: Floor covariance to prevent numerical drift toward negativity
+    this.Pp = max(this.Pp, 0.01);
+    this.Pv = max(this.Pv, 0.01);
   }
 }
 
@@ -517,7 +522,14 @@ class BallisticMissile extends Threat {
     this.vy += CFG.GRAVITY_PX; // gravitational acceleration (adds to vy → increases downward speed)
     this.x  += this.vx;
     this.y  += this.vy;
-    if (this.y > CFG.SIM_H + 5 || this.x > CFG.SIM_W + 5) this.alive = false;
+    // FIX MED-1: Ballistic missile ground impact — spawn explosion + log instead of silent death
+    if (this.y > CFG.SIM_H + 5) {
+      boom(this.x, CFG.SIM_H, 180, 100, 40, 12, this.type); // ground impact dust
+      this.alive = false;
+      addLog(`BSTC GROUND IMPACT x=${floor(this.x)}`);
+      return;
+    }
+    if (this.x > CFG.SIM_W + 5) this.alive = false;
   }
   draw() {
     this.drawTrail(255, 80, 60);
@@ -1012,15 +1024,26 @@ function runC2() {
     if (!allTracks.has(id) || kf.age > allTracks.get(id).age)
       allTracks.set(id, kf);
   }
-  // Collect KF objects already being chased by active interceptors
-  const engaged = new Set(interceptors.filter(i => i.alive).map(i => i.track));
+  // FIX MED-4: Track engagement by threat ID instead of KF object reference
+  // When ground radar and EW radar create separate KalmanTrack objects for the
+  // same threat, object-reference equality fails → duplicate launches. Using
+  // threat ID eliminates the ambiguity.
+  const allRadarsList = [...radars, ewRadar];
+  const engagedIds = new Set(interceptors.filter(i => i.alive).map(i => {
+    for (const r of allRadarsList) {
+      for (const [id, kf] of r.tracks) {
+        if (kf === i.track) return id;
+      }
+    }
+    return null;
+  }).filter(id => id !== null));
 
   // IMPROVED: Build prioritized list — fast movers first
   const candidates = [];
   for (const [id, kf] of allTracks) {
     const threat = threats.find(t => t.id === id && t.alive);
     if (!threat) continue;
-    if (engaged.has(kf)) continue;
+    if (engagedIds.has(id)) continue;
 
     // Estimate track speed from Kalman velocity
     const estSpeed = kf.speed;
@@ -1557,7 +1580,8 @@ function draw() {
   // ── Wave spawning timer
   if (!gameOver && millis() - lastWave > CFG.WAVE_MS) {
     spawnWave();
-    lastWave = millis();
+    // FIX MED-2: Snap forward to prevent burst-spawning after tab backgrounding
+    lastWave = max(millis(), lastWave + CFG.WAVE_MS);
   }
 
   // ── Threat updates
