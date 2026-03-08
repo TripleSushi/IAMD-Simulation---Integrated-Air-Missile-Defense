@@ -284,6 +284,7 @@ const CFG = {
 
   // FIX v2.1-L2: Lead damping factor for initial interceptor aim (was magic 0.6)
   LEAD_DAMPING: 0.6,
+  RESUPPLY_PER_WAVE: 2,
 };
 
 // ── WORLD ↔ CANVAS COORDINATE TRANSFORMS ─────────────────────────────────────
@@ -869,6 +870,7 @@ class Interceptor {
     this.sspk = this.tier.sspk;
     this.color = this.tier.color;
     this.trailColor = this.tier.trailColor;
+    this.fallback = false;
 
     // FIX HIGH-1: Guard against null/undefined track to prevent TypeError on track.pos
     if (!track) { this.alive = false; return; }
@@ -992,12 +994,13 @@ class Interceptor {
   draw() {
     noFill();
     const fuelLow = this.age > CFG.INT_MAX_AGE * 0.7;
+    const dc = this.fallback ? [255, 200, 50] : this.trailColor;
     for (let i = 1; i < this.trail.length; i++) {
       const t = i / this.trail.length;
       const alpha = t * 225;
       const w = lerp(0.4, this.tierKey === 'UPPER' ? 2.7 : this.tierKey === 'MIDDLE' ? 2.2 : 1.8, t);
       const flickerAlpha = fuelLow ? alpha * random(0.3, 1.0) : alpha;
-      stroke(this.trailColor[0], this.trailColor[1], this.trailColor[2], min(255, flickerAlpha));
+      stroke(dc[0], dc[1], dc[2], min(255, flickerAlpha));
       strokeWeight(w);
       line(this.trail[i-1].x, this.trail[i-1].y, this.trail[i].x, this.trail[i].y);
     }
@@ -1167,11 +1170,12 @@ function ensureTrackAssessment(id) {
   return slsState.get(id);
 }
 
-function launchTierInterceptor(kf, threat, tierKey, isReengage = false) {
+function launchTierInterceptor(kf, threat, tierKey, isReengage = false, fallback = false) {
   const tier = CFG.INT_TIERS[tierKey];
   if (!tier || score.magazines[tierKey] <= 0) return false;
   const lx = CFG.BATT_X_FRAC * CFG.SIM_W;
   interceptors.push(new Interceptor(lx, CFG.SIM_H - 8, kf, tierKey));
+  interceptors[interceptors.length - 1].fallback = fallback;
   score.shots++;
   score.magazines[tierKey]--;
   score.tierStats[tierKey].fire++;
@@ -1247,8 +1251,8 @@ function runC2() {
         }
       }
     }
-    if (score.magazines[tierKey] <= 0) continue;
-    candidates.push({ id, kf, threat, estSpeed, isHypersonic, tierKey, isReengage: assessment.currentTierIndex !== null });
+    let fallback = false; const esc = { LOWER: 'MIDDLE', MIDDLE: 'UPPER' }; while (score.magazines[tierKey] <= 0 && esc[tierKey]) { tierKey = esc[tierKey]; fallback = true; } if (score.magazines[tierKey] <= 0) continue;
+    candidates.push({ id, kf, threat, estSpeed, isHypersonic, tierKey, fallback, isReengage: assessment.currentTierIndex !== null });
   }
 
   candidates.sort((a, b) => {
@@ -1261,12 +1265,13 @@ function runC2() {
 
   for (const c of candidates) {
     if (engagedIds.has(c.id)) continue;
-    if (launchTierInterceptor(c.kf, c.threat, c.tierKey, c.isReengage)) engagedIds.add(c.id);
+    if (launchTierInterceptor(c.kf, c.threat, c.tierKey, c.isReengage, c.fallback)) engagedIds.add(c.id);
   }
 }
 
 // ── WAVE GENERATOR ────────────────────────────────────────────────────────────
 function spawnWave(type) {
+  if (score.wave > 0) { for (const tk of CFG.TIER_ORDER) { const mx = CFG.INT_TIERS[tk].magazine; const b = score.magazines[tk]; score.magazines[tk] = Math.min(mx, b + CFG.RESUPPLY_PER_WAVE); if (score.magazines[tk] > b) addLog('RESUPPLY: ' + tk + ' +' + (score.magazines[tk] - b)); } }
   score.wave++;
   const types = ['ballistic','cruise','hypersonic','drone'];
   const t = type || types[floor(random(types.length))];
@@ -1326,7 +1331,7 @@ function checkCollisions() {
       }
       if (minDist < inter.killRadius) {
         const c = inter.color;
-        const killed = random() < inter.sspk;
+        const killed = random() < (inter.fallback ? inter.sspk * 0.7 : inter.sspk);
         inter.alive = false;
         const assessment = ensureTrackAssessment(t.id);
         assessment.waitingUntil = frameCount + CFG.SLS_ASSESS_DELAY;
